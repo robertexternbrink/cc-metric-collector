@@ -112,10 +112,6 @@ func (m *IOstatCollector) Init(config json.RawMessage) error {
 		}
 		currentValues := make(map[string]int64)
 		lastValues := make(map[string]int64)
-		for m := range m.matches {
-			currentValues[m] = 0
-			lastValues[m] = 0
-		}
 		for name, idx := range m.matches {
 			if idx < len(linefields) {
 				if value, err := strconv.ParseInt(linefields[idx], 0, 64); err == nil {
@@ -190,6 +186,10 @@ func (m *IOstatCollector) Read(interval time.Duration, output chan lp.CCMessage)
 			if idx < len(linefields) {
 				x, err := strconv.ParseInt(linefields[idx], 0, 64)
 				if err == nil {
+					if _, known := entry.currentValues[name]; !known && name != "io_ioops" {
+						entry.currentValues[name] = x
+						continue
+					}
 					if name != "io_ioops" && x < entry.currentValues[name] {
 						entry.lastValues[name] = entry.currentValues[name]
 						entry.currentValues[name] = x
