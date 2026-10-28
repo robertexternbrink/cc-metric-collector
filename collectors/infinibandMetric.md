@@ -45,3 +45,8 @@ Metrics:
 * `ib_total_pkts_bw` (if `send_total_values == true` and `send_derived_values == true`)
 
 The collector adds a `device` tag to all metrics
+
+Data counter units are converted to bytes independently of physical link width.
+Ordinary InfiniBand uses four bytes per unit; the `hfi1` driver uses eight-byte
+Omni-Path flits. Packet counters remain packet counts. If the driver symlink
+cannot be resolved, the ordinary InfiniBand conversion is retained.

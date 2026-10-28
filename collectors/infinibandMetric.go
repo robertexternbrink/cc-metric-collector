@@ -37,7 +37,7 @@ type InfinibandCollectorMetric struct {
 	path               string
 	unit               string
 	unitRates          string
-	scaleByFourLanes   bool
+	scale              uint64
 	addToIBTotal       bool
 	addToIBTotalPkgs   bool
 	lastState          uint64
@@ -52,7 +52,16 @@ type InfinibandCollectorInfo struct {
 	tagSet           map[string]string           // corresponding tag list
 }
 
+type infinibandSources struct {
+	glob         func(string) ([]string, error)
+	readFile     func(string) ([]byte, error)
+	access       func(string, uint32) error
+	now          func() time.Time
+	evalSymlinks func(string) (string, error)
+}
+
 type InfinibandCollector struct {
+	sources infinibandSources
 	metricCollector
 
 	config struct {
@@ -72,6 +81,21 @@ func (m *InfinibandCollector) Init(config json.RawMessage) error {
 		return nil
 	}
 
+	if m.sources.glob == nil {
+		m.sources.glob = filepath.Glob
+	}
+	if m.sources.readFile == nil {
+		m.sources.readFile = os.ReadFile
+	}
+	if m.sources.access == nil {
+		m.sources.access = unix.Access
+	}
+	if m.sources.now == nil {
+		m.sources.now = time.Now
+	}
+	if m.sources.evalSymlinks == nil {
+		m.sources.evalSymlinks = filepath.EvalSymlinks
+	}
 	var err error
 	m.name = "InfinibandCollector"
 	if err := m.setup(); err != nil {
@@ -97,7 +121,7 @@ func (m *InfinibandCollector) Init(config json.RawMessage) error {
 
 	// Loop for all InfiniBand directories
 	globPattern := filepath.Join(ibBasePath, "*", "ports", "*")
-	ibDirs, err := filepath.Glob(globPattern)
+	ibDirs, err := m.sources.glob(globPattern)
 	if err != nil {
 		return fmt.Errorf("%s Init(): unable to glob files with pattern %s: %w", m.name, globPattern, err)
 	}
@@ -108,7 +132,7 @@ func (m *InfinibandCollector) Init(config json.RawMessage) error {
 	for _, path := range ibDirs {
 
 		// Skip, when no LID is assigned
-		line, err := os.ReadFile(filepath.Join(path, "lid"))
+		line, err := m.sources.readFile(filepath.Join(path, "lid"))
 		if err != nil {
 			continue
 		}
@@ -127,28 +151,33 @@ func (m *InfinibandCollector) Init(config json.RawMessage) error {
 			continue
 		}
 
+		// InfiniBand counters use four bytes per unit; hfi1 counts eight-byte flits.
+		dataScale := uint64(4)
+		if driver, err := m.sources.evalSymlinks(filepath.Join(ibBasePath, device, "device", "driver")); err == nil && filepath.Base(driver) == "hfi1" {
+			dataScale = 8
+		}
 		// Check access to counter files
 		countersDir := filepath.Join(path, "counters")
 		portCounterFiles := []InfinibandCollectorMetric{
 			{
-				// Total number of data octets, divided by 4 (lanes), received on all VLs.
+				// Received data on all VLs in driver-specific counter units.
 				// This is 64 bit counter
-				name:             "ib_recv",
-				path:             filepath.Join(countersDir, "port_rcv_data"),
-				unit:             ibDataUnit,
-				unitRates:        ibDataRateUnit,
-				scaleByFourLanes: true,
-				addToIBTotal:     true,
+				name:         "ib_recv",
+				path:         filepath.Join(countersDir, "port_rcv_data"),
+				unit:         ibDataUnit,
+				unitRates:    ibDataRateUnit,
+				scale:        dataScale,
+				addToIBTotal: true,
 			},
 			{
-				// Total number of data octets, divided by 4 (lanes), transmitted on all VLs.
+				// Transmitted data on all VLs in driver-specific counter units.
 				// This is 64 bit counter
-				name:             "ib_xmit",
-				path:             filepath.Join(countersDir, "port_xmit_data"),
-				unit:             ibDataUnit,
-				unitRates:        ibDataRateUnit,
-				scaleByFourLanes: true,
-				addToIBTotal:     true,
+				name:         "ib_xmit",
+				path:         filepath.Join(countersDir, "port_xmit_data"),
+				unit:         ibDataUnit,
+				unitRates:    ibDataRateUnit,
+				scale:        dataScale,
+				addToIBTotal: true,
 			},
 			{
 				// Total number of packets received on all VLs from this port (this may include packets containing Errors.
@@ -157,6 +186,7 @@ func (m *InfinibandCollector) Init(config json.RawMessage) error {
 				path:             filepath.Join(countersDir, "port_rcv_packets"),
 				unit:             ibPkgUnit,
 				unitRates:        ibPkgRateUnit,
+				scale:            1,
 				addToIBTotalPkgs: true,
 			},
 			{
@@ -166,11 +196,12 @@ func (m *InfinibandCollector) Init(config json.RawMessage) error {
 				path:             filepath.Join(countersDir, "port_xmit_packets"),
 				unit:             ibPkgUnit,
 				unitRates:        ibPkgRateUnit,
+				scale:            1,
 				addToIBTotalPkgs: true,
 			},
 		}
 		for _, counter := range portCounterFiles {
-			err := unix.Access(counter.path, unix.R_OK)
+			err := m.sources.access(counter.path, unix.R_OK)
 			if err != nil {
 				return fmt.Errorf("%s Init(): unable to access %s: %w", m.name, counter.path, err)
 			}
@@ -207,7 +238,7 @@ func (m *InfinibandCollector) Read(interval time.Duration, output chan lp.CCMess
 	}
 
 	// Current time stamp
-	now := time.Now()
+	now := m.sources.now()
 	// time difference to last time stamp
 	timeDiff := now.Sub(m.lastTimestamp).Seconds()
 	// Save current timestamp
@@ -223,7 +254,7 @@ func (m *InfinibandCollector) Read(interval time.Duration, output chan lp.CCMess
 			counterDef := &info.portCounterFiles[i]
 
 			// Read counter file
-			line, err := os.ReadFile(counterDef.path)
+			line, err := m.sources.readFile(counterDef.path)
 			if err != nil {
 				cclog.ComponentError(
 					m.name,
@@ -245,9 +276,7 @@ func (m *InfinibandCollector) Read(interval time.Duration, output chan lp.CCMess
 				continue
 			}
 			vScaledCounter := vRawCounter
-			if counterDef.scaleByFourLanes {
-				vScaledCounter *= uint64(4)
-			}
+			vScaledCounter *= counterDef.scale
 
 			// Send absolut values
 			if m.config.SendAbsoluteValues {
@@ -268,9 +297,7 @@ func (m *InfinibandCollector) Read(interval time.Duration, output chan lp.CCMess
 					// = 2^64 - lastState + vRawCounter
 					// ≡ vRawCounter - lastState (mod 2^64)
 					rate = float64(vRawCounter-counterDef.lastState) / timeDiff
-					if counterDef.scaleByFourLanes {
-						rate *= float64(4)
-					}
+					rate *= float64(counterDef.scale)
 					if y, err := lp.NewMetric(counterDef.name+"_bw", info.tagSet, m.meta, rate, now); err == nil {
 						y.AddMeta("unit", counterDef.unitRates)
 						output <- y
