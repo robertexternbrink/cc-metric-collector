@@ -111,9 +111,7 @@ func (m *CpustatCollector) Init(config json.RawMessage) error {
 
 	m.matches = make(map[string]int)
 	for match, index := range matches {
-		if !slices.Contains(m.config.ExcludeMetrics, match) {
-			m.matches[match] = index
-		}
+		m.matches[match] = index
 	}
 	m.config.excludeNumCPUs = slices.Contains(m.config.ExcludeMetrics, "num_cpus")
 
@@ -202,13 +200,16 @@ func (m *CpustatCollector) parseStatLine(linefields []string, tags map[string]st
 	sum := float64(0)
 	for name, value := range values {
 		sum += value
+		if slices.Contains(m.config.ExcludeMetrics, name) {
+			continue
+		}
 		y, err := lp.NewMetric(name, tags, m.meta, value*100, now)
 		if err == nil {
 			y.AddTag("unit", "Percent")
 			output <- y
 		}
 	}
-	if v, ok := values["cpu_idle"]; ok {
+	if v, ok := values["cpu_idle"]; ok && !slices.Contains(m.config.ExcludeMetrics, "cpu_used") {
 		sum -= v
 		y, err := lp.NewMetric("cpu_used", tags, m.meta, sum*100, now)
 		if err == nil {
