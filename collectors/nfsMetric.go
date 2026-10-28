@@ -53,8 +53,9 @@ func (m *nfsCollector) updateStats() error {
 		return err
 	}
 
+	next := make(map[string]NfsCollectorData, len(m.data))
 	for name, data := range m.data {
-		m.data[name] = NfsCollectorData{
+		next[name] = NfsCollectorData{
 			last:    data.current,
 			current: -1,
 		}
@@ -74,16 +75,17 @@ func (m *nfsCollector) updateStats() error {
 			return err
 		}
 
-		collectorData, exist := m.data[name]
+		collectorData, exist := next[name]
 		collectorData.current = value
 
 		if !exist {
 			collectorData.last = -1
 		}
 
-		m.data[name] = collectorData
+		next[name] = collectorData
 	}
 
+	m.data = next
 	return nil
 }
 
