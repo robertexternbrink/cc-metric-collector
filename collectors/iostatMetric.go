@@ -24,6 +24,9 @@ import (
 
 const IOSTATFILE = `/proc/diskstats`
 
+var iostatInputFile = IOSTATFILE
+var iostatOpenFile = os.Open
+
 type IOstatCollectorConfig struct {
 	ExcludeMetrics []string `json:"exclude_metrics,omitempty"`
 	ExcludeDevices []string `json:"exclude_devices,omitempty"`
@@ -87,9 +90,9 @@ func (m *IOstatCollector) Init(config json.RawMessage) error {
 	if len(m.matches) == 0 {
 		return fmt.Errorf("%s Init(): no metrics to collect", m.name)
 	}
-	file, err := os.Open(IOSTATFILE)
+	file, err := iostatOpenFile(iostatInputFile)
 	if err != nil {
-		return fmt.Errorf("%s Init(): Failed to open file \"%s\": %s", m.name, IOSTATFILE, err.Error())
+		return fmt.Errorf("%s Init(): Failed to open file \"%s\": %s", m.name, iostatInputFile, err.Error())
 	}
 
 	scanner := bufio.NewScanner(file)
@@ -131,10 +134,10 @@ func (m *IOstatCollector) Init(config json.RawMessage) error {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("%s Init(): Failed to scan content of file %q: %s", m.name, IOSTATFILE, err.Error())
+		return fmt.Errorf("%s Init(): Failed to scan content of file %q: %s", m.name, iostatInputFile, err.Error())
 	}
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("%s Init(): Failed to close file \"%s\": %s", m.name, IOSTATFILE, err.Error())
+		return fmt.Errorf("%s Init(): Failed to close file \"%s\": %s", m.name, iostatInputFile, err.Error())
 	}
 
 	m.init = true
@@ -146,18 +149,18 @@ func (m *IOstatCollector) Read(interval time.Duration, output chan lp.CCMessage)
 		return
 	}
 
-	file, err := os.Open(IOSTATFILE)
+	file, err := iostatOpenFile(iostatInputFile)
 	if err != nil {
 		cclog.ComponentError(
 			m.name,
-			fmt.Sprintf("Read(): Failed to open file '%s': %s", IOSTATFILE, err.Error()))
+			fmt.Sprintf("Read(): Failed to open file '%s': %s", iostatInputFile, err.Error()))
 		return
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
 			cclog.ComponentError(
 				m.name,
-				fmt.Sprintf("Read(): Failed to close file '%s': %s", IOSTATFILE, err.Error()))
+				fmt.Sprintf("Read(): Failed to close file '%s': %s", iostatInputFile, err.Error()))
 		}
 	}()
 
@@ -189,6 +192,9 @@ func (m *IOstatCollector) Read(interval time.Duration, output chan lp.CCMessage)
 				if err == nil {
 					// Calculate difference using previous current and new value
 					diff := x - entry.currentValues[name]
+					if name == "io_ioops" {
+						diff = x
+					}
 					y, err := lp.NewMetric(name, entry.tags, m.meta, int(diff), time.Now())
 					if err == nil {
 						output <- y
@@ -204,7 +210,7 @@ func (m *IOstatCollector) Read(interval time.Duration, output chan lp.CCMessage)
 	if err := scanner.Err(); err != nil {
 		cclog.ComponentErrorf(
 			m.name,
-			"Read(): Failed to scan content of file %q: %s", IOSTATFILE, err.Error())
+			"Read(): Failed to scan content of file %q: %s", iostatInputFile, err.Error())
 	}
 }
 
