@@ -25,6 +25,9 @@ import (
 
 const CPUSTATFILE = `/proc/stat`
 
+var cpustatInputFile = CPUSTATFILE
+var cpustatOpenFile = os.Open
+
 type CpustatCollectorConfig struct {
 	ExcludeMetrics []string `json:"exclude_metrics,omitempty"`
 	excludeNumCPUs bool
@@ -83,9 +86,9 @@ func (m *CpustatCollector) Init(config json.RawMessage) error {
 	m.config.excludeNumCPUs = slices.Contains(m.config.ExcludeMetrics, "num_cpus")
 
 	// Check input file
-	file, err := os.Open(CPUSTATFILE)
+	file, err := cpustatOpenFile(cpustatInputFile)
 	if err != nil {
-		return fmt.Errorf("%s Init(): Failed to open file '%s': %s", m.name, CPUSTATFILE, err.Error())
+		return fmt.Errorf("%s Init(): Failed to open file '%s': %s", m.name, cpustatInputFile, err.Error())
 	}
 
 	// Pre-generate tags for all CPUs
@@ -118,12 +121,13 @@ func (m *CpustatCollector) Init(config json.RawMessage) error {
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		file.Close()
 		return fmt.Errorf("%s Init(): Call to scanner.Err failed: %s", m.name, err.Error())
 	}
 
 	// Close file
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("%s Init(): Failed to close file '%s': %s", m.name, CPUSTATFILE, err.Error())
+		return fmt.Errorf("%s Init(): Failed to close file '%s': %s", m.name, cpustatInputFile, err.Error())
 	}
 
 	m.lastTimestamp = time.Now()
@@ -172,17 +176,17 @@ func (m *CpustatCollector) Read(interval time.Duration, output chan lp.CCMessage
 	now := time.Now()
 	tsdelta := now.Sub(m.lastTimestamp)
 
-	file, err := os.Open(CPUSTATFILE)
+	file, err := cpustatOpenFile(cpustatInputFile)
 	if err != nil {
 		cclog.ComponentError(
 			m.name,
-			fmt.Sprintf("Read(): Failed to open file '%s': %v", CPUSTATFILE, err.Error()))
+			fmt.Sprintf("Read(): Failed to open file '%s': %v", cpustatInputFile, err.Error()))
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
 			cclog.ComponentError(
 				m.name,
-				fmt.Sprintf("Read(): Failed to close file '%s': %v", string(CPUSTATFILE), err.Error()))
+				fmt.Sprintf("Read(): Failed to close file '%s': %v", string(cpustatInputFile), err.Error()))
 		}
 	}()
 
