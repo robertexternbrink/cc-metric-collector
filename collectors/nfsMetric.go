@@ -142,7 +142,7 @@ func (m *nfsCollector) Read(interval time.Duration, output chan lp.CCMessage) {
 	}
 
 	for name, data := range m.data {
-		if slices.Contains(m.config.ExcludeMetrics, name) {
+		if slices.Contains(m.config.ExcludeMetrics, name) || slices.Contains(m.config.ExcludeMetrics, prefix+"_"+name) {
 			continue
 		}
 
