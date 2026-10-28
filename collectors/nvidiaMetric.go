@@ -197,7 +197,7 @@ func (m *NvidiaCollector) Init(config json.RawMessage) (err error) {
 		if m.config.AddBoardNumberMeta {
 			board, ret := nvml.DeviceGetBoardPartNumber(device)
 			if ret != nvml.SUCCESS {
-				cclog.ComponentError(m.name, "Unable to get boart part number for device at index", i, ":", err.Error())
+				cclog.ComponentError(m.name, "Unable to get boart part number for device at index", i, ":", nvml.ErrorString(ret))
 			} else {
 				g.meta["board_number"] = board
 			}
@@ -205,7 +205,7 @@ func (m *NvidiaCollector) Init(config json.RawMessage) (err error) {
 		if m.config.AddSerialMeta {
 			serial, ret := nvml.DeviceGetSerial(device)
 			if ret != nvml.SUCCESS {
-				cclog.ComponentError(m.name, "Unable to get serial number for device at index", i, ":", err.Error())
+				cclog.ComponentError(m.name, "Unable to get serial number for device at index", i, ":", nvml.ErrorString(ret))
 			} else {
 				g.meta["serial"] = serial
 			}
@@ -213,7 +213,7 @@ func (m *NvidiaCollector) Init(config json.RawMessage) (err error) {
 		if m.config.AddUuidMeta {
 			uuid, ret := nvml.DeviceGetUUID(device)
 			if ret != nvml.SUCCESS {
-				cclog.ComponentError(m.name, "Unable to get UUID for device at index", i, ":", err.Error())
+				cclog.ComponentError(m.name, "Unable to get UUID for device at index", i, ":", nvml.ErrorString(ret))
 			} else {
 				g.meta["uuid"] = uuid
 			}
@@ -1282,7 +1282,7 @@ func (m *NvidiaCollector) Read(interval time.Duration, output chan lp.CCMessage)
 				if m.config.UseUuidForMigDevices {
 					uuid, ret := nvml.DeviceGetUUID(mdev)
 					if ret != nvml.SUCCESS {
-						cclog.ComponentError(m.name, "Unable to get UUID for mig device at index", j, ":", err.Error())
+						cclog.ComponentError(m.name, "Unable to get UUID for mig device at index", j, ":", nvml.ErrorString(ret))
 					} else {
 						migDevice.tags["stype-id"] = uuid
 					}
