@@ -20,6 +20,17 @@ import (
 	"github.com/ClusterCockpit/go-rocm-smi/pkg/rocm_smi"
 )
 
+var (
+	rocmSmiInit         = rocm_smi.Init
+	rocmSmiShutdown     = rocm_smi.Shutdown
+	rocmSmiDeviceCount  = rocm_smi.NumMonitorDevices
+	rocmSmiDeviceHandle = rocm_smi.DeviceGetHandleByIndex
+	rocmSmiPciInfo      = rocm_smi.DeviceGetPciInfo
+	rocmSmiSerial       = rocm_smi.DeviceGetSerialNumber
+	rocmSmiMetrics      = rocm_smi.DeviceGetMetrics
+	rocmSmiStatusString = rocm_smi.StatusStringNoError
+)
+
 type RocmSmiCollectorConfig struct {
 	ExcludeMetrics     []string `json:"exclude_metrics,omitempty"`
 	ExcludeDevices     []string `json:"exclude_devices,omitempty"`
@@ -50,7 +61,7 @@ type RocmSmiCollector struct {
 // Init initializes the sample collector
 // Called once by the collector manager
 // All tags, meta data tags and metrics that do not change over the runtime should be set here
-func (m *RocmSmiCollector) Init(config json.RawMessage) error {
+func (m *RocmSmiCollector) Init(config json.RawMessage) (err error) {
 	// Always set the name early in Init() to use it in cclog.Component* functions
 	m.name = "RocmSmiCollector"
 	// This is for later use, also call it early
@@ -66,12 +77,29 @@ func (m *RocmSmiCollector) Init(config json.RawMessage) error {
 		}
 	}
 
-	ret := rocm_smi.Init()
+	initialized := false
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("%s Init(): ROCm SMI initialization panicked: %v", m.name, recovered)
+		}
+		if err != nil {
+			m.init = false
+			if initialized {
+				if cleanupErr := shutdownRocmSmi(); cleanupErr != nil {
+					err = fmt.Errorf("%w; cleanup failed: %v", err, cleanupErr)
+				}
+			}
+		}
+	}()
+
+	ret := rocmSmiInit()
 	if ret != rocm_smi.STATUS_SUCCESS {
 		return fmt.Errorf("%s Init(): failed to initialize ROCm SMI library", m.name)
 	}
 
-	numDevs, ret := rocm_smi.NumMonitorDevices()
+	initialized = true
+
+	numDevs, ret := rocmSmiDeviceCount()
 	if ret != rocm_smi.STATUS_SUCCESS {
 		return fmt.Errorf("%s Init(): failed to get number of GPUs from ROCm SMI library", m.name)
 	}
@@ -83,12 +111,12 @@ func (m *RocmSmiCollector) Init(config json.RawMessage) error {
 		if slices.Contains(m.config.ExcludeDevices, str_i) {
 			continue
 		}
-		device, ret := rocm_smi.DeviceGetHandleByIndex(i)
+		device, ret := rocmSmiDeviceHandle(i)
 		if ret != rocm_smi.STATUS_SUCCESS {
 			return fmt.Errorf("%s Init(): failed to get get handle for GPU %d", m.name, i)
 		}
 
-		pciInfo, ret := rocm_smi.DeviceGetPciInfo(device)
+		pciInfo, ret := rocmSmiPciInfo(device)
 		if ret != rocm_smi.STATUS_SUCCESS {
 			return fmt.Errorf("%s Init(): failed to get PCI information for GPU %d", m.name, i)
 		}
@@ -122,9 +150,9 @@ func (m *RocmSmiCollector) Init(config json.RawMessage) error {
 		}
 
 		if m.config.AddSerialMeta {
-			serial, ret := rocm_smi.DeviceGetSerialNumber(device)
+			serial, ret := rocmSmiSerial(device)
 			if ret != rocm_smi.STATUS_SUCCESS {
-				cclog.ComponentError(m.name, "Unable to get serial number for device at index", i, ":", rocm_smi.StatusStringNoError(ret))
+				cclog.ComponentError(m.name, "Unable to get serial number for device at index", i, ":", rocmSmiStatusString(ret))
 			} else {
 				dev.meta["serial"] = serial
 			}
@@ -146,13 +174,16 @@ func (m *RocmSmiCollector) Init(config json.RawMessage) error {
 // Read collects all metrics belonging to the sample collector
 // and sends them through the output channel to the collector manager
 func (m *RocmSmiCollector) Read(interval time.Duration, output chan lp.CCMessage) {
+	if !m.init {
+		return
+	}
 	// Create a sample metric
 	timestamp := time.Now()
 
 	for _, dev := range m.devices {
-		metrics, ret := rocm_smi.DeviceGetMetrics(dev.device)
+		metrics, ret := rocmSmiMetrics(dev.device)
 		if ret != rocm_smi.STATUS_SUCCESS {
-			cclog.ComponentError(m.name, "Unable to get metrics for device at index", dev.index, ":", rocm_smi.StatusStringNoError(ret))
+			cclog.ComponentError(m.name, "Unable to get metrics for device at index", dev.index, ":", rocmSmiStatusString(ret))
 			continue
 		}
 
@@ -274,10 +305,24 @@ func (m *RocmSmiCollector) Read(interval time.Duration, output chan lp.CCMessage
 // Close metric collector: close network connection, close files, close libraries, ...
 // Called once by the collector manager
 func (m *RocmSmiCollector) Close() {
-	// Unset flag
-	ret := rocm_smi.Shutdown()
-	if ret != rocm_smi.STATUS_SUCCESS {
-		cclog.ComponentError(m.name, "Failed to shutdown ROCm SMI library")
+	if !m.init {
+		return
 	}
 	m.init = false
+	if err := shutdownRocmSmi(); err != nil {
+		cclog.ComponentError(m.name, "Failed to shutdown ROCm SMI library:", err)
+	}
+}
+
+// The binding may panic if its dynamic library cannot be closed.
+func shutdownRocmSmi() (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("ROCm SMI shutdown panicked: %v", recovered)
+		}
+	}()
+	if ret := rocmSmiShutdown(); ret != rocm_smi.STATUS_SUCCESS {
+		return fmt.Errorf("ROCm SMI shutdown failed: %s", rocmSmiStatusString(ret))
+	}
+	return nil
 }
