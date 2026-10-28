@@ -146,7 +146,7 @@ func (m *nfsCollector) Read(interval time.Duration, output chan lp.CCMessage) {
 			continue
 		}
 
-		if data.current >= 0 && data.last >= 0 {
+		if data.current >= data.last && data.last >= 0 {
 			value := data.current - data.last
 			y, err := lp.NewMetric(fmt.Sprintf("%s_%s", prefix, name), m.tags, m.meta, value, timestamp)
 			if err == nil {
