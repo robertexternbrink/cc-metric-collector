@@ -203,8 +203,13 @@ func (m *NetstatCollector) Init(config json.RawMessage) error {
 		}
 	}
 
-	if err := file.Close(); err != nil {
-		return err
+	scanErr := scanner.Err()
+	closeErr := file.Close()
+	if scanErr != nil {
+		return fmt.Errorf("%s Init(): failed to scan netstat file: %w", m.name, scanErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("%s Init(): failed to close netstat file: %w", m.name, closeErr)
 	}
 
 	if len(m.matches) == 0 {
