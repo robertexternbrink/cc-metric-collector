@@ -8,15 +8,18 @@
 package multiChanTicker
 
 import (
+	"slices"
+	"sync"
 	"time"
 
 	cclog "github.com/ClusterCockpit/cc-lib/v2/ccLogger"
 )
 
 type multiChanTicker struct {
-	ticker   *time.Ticker
-	channels []chan time.Time
-	done     chan bool
+	channelsLock sync.Mutex
+	ticker       *time.Ticker
+	channels     []chan time.Time
+	done         chan bool
 }
 
 type MultiChanTicker interface {
@@ -40,7 +43,10 @@ func (t *multiChanTicker) Init(duration time.Duration) {
 				return
 			case ts := <-t.ticker.C:
 				cclog.ComponentDebug("MultiChanTicker", "Tick", ts)
-				for _, c := range t.channels {
+				t.channelsLock.Lock()
+				channels := slices.Clone(t.channels)
+				t.channelsLock.Unlock()
+				for _, c := range channels {
 					select {
 					case <-t.done:
 						done()
@@ -54,10 +60,13 @@ func (t *multiChanTicker) Init(duration time.Duration) {
 }
 
 func (t *multiChanTicker) AddChannel(channel chan time.Time) {
+	t.channelsLock.Lock()
+	defer t.channelsLock.Unlock()
 	t.channels = append(t.channels, channel)
 }
 
 func (t *multiChanTicker) Close() {
+	t.ticker.Stop()
 	cclog.ComponentDebug("MultiChanTicker", "CLOSE")
 	t.done <- true
 	// wait for close of channel t.done
