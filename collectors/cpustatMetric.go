@@ -136,15 +136,31 @@ func (m *CpustatCollector) Init(config json.RawMessage) error {
 }
 
 func (m *CpustatCollector) parseStatLine(linefields []string, tags map[string]string, output chan lp.CCMessage, now time.Time, tsdelta time.Duration) {
+	if len(linefields) == 0 {
+		return
+	}
+	if m.olddata[linefields[0]] == nil {
+		m.olddata[linefields[0]] = make(map[string]int64)
+	}
 	values := make(map[string]float64)
 	clktck, _ := sysconf.Sysconf(sysconf.SC_CLK_TCK)
 	for match, index := range m.matches {
 		if len(match) > 0 {
+			if index >= len(linefields) {
+				delete(m.olddata[linefields[0]], match)
+				continue
+			}
 			x, err := strconv.ParseInt(linefields[index], 0, 64)
 			if err == nil {
-				vdiff := x - m.olddata[linefields[0]][match]
+				previous, exists := m.olddata[linefields[0]][match]
 				m.olddata[linefields[0]][match] = x // Store new value for next run
+				if !exists {
+					continue
+				}
+				vdiff := x - previous
 				values[match] = float64(vdiff) / float64(tsdelta.Seconds()) / float64(clktck)
+			} else {
+				delete(m.olddata[linefields[0]], match)
 			}
 		}
 	}
@@ -197,6 +213,9 @@ func (m *CpustatCollector) Read(interval time.Duration, output chan lp.CCMessage
 		if strings.Compare(linefields[0], "cpu") == 0 {
 			m.parseStatLine(linefields, m.nodetags, output, now, tsdelta)
 		} else if strings.HasPrefix(linefields[0], "cpu") {
+			if _, exists := m.cputags[linefields[0]]; !exists {
+				m.cputags[linefields[0]] = map[string]string{"type": "hwthread", "type-id": strings.TrimPrefix(linefields[0], "cpu")}
+			}
 			m.parseStatLine(linefields, m.cputags[linefields[0]], output, now, tsdelta)
 			num_cpus++
 		}
