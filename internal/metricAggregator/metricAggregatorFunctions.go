@@ -10,6 +10,8 @@ package metricAggregator
 import (
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"regexp"
 	"slices"
 	"strconv"
@@ -83,8 +85,33 @@ func avgAnyType[T float64 | float32 | int | int32 | int64](values []T) (float64,
 	if len(values) == 0 {
 		return 0.0, errors.New("average function requires at least one argument")
 	}
-	sum, err := sumAnyType(values)
-	return float64(sum) / float64(len(values)), err
+	// Integer accumulation must remain exact until the final float64 conversion:
+	// converting each input first would lose cancellation above 2^53.
+	switch any(values[0]).(type) {
+	case int, int32, int64:
+		var sum, term big.Int
+		for _, value := range values {
+			sum.Add(&sum, term.SetInt64(int64(value)))
+		}
+		result, _ := new(big.Rat).SetFrac(&sum, big.NewInt(int64(len(values)))).Float64()
+		return result, nil
+	}
+	var sum float64
+	finite := true
+	for _, value := range values {
+		x := float64(value)
+		finite = finite && !math.IsNaN(x) && !math.IsInf(x, 0)
+		sum += x
+	}
+	if math.IsInf(sum, 0) && finite {
+		// A finite mean can be representable even when its intermediate sum is not.
+		sum = 0
+		for _, value := range values {
+			sum += float64(value) / float64(len(values))
+		}
+		return sum, nil
+	}
+	return sum / float64(len(values)), nil
 }
 
 // Get the average or mean value
@@ -136,7 +163,8 @@ func medianAnyType[T float64 | float32 | int | int32 | int64](values []T) (T, er
 	}
 	slices.Sort(values)
 	var median T
-	if midPoint := len(values) % 2; midPoint == 0 {
+	midPoint := len(values) / 2
+	if len(values)%2 == 0 {
 		median = (values[midPoint-1] + values[midPoint]) / 2
 	} else {
 		median = values[midPoint]
