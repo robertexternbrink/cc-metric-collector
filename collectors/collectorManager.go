@@ -140,6 +140,9 @@ func (cm *collectorManager) Start() {
 			for _, c := range cm.collectors {
 				c.Close()
 			}
+			for _, c := range cm.serial {
+				c.Close()
+			}
 			close(cm.done)
 			cclog.ComponentDebug("CollectorManager", "DONE")
 		}
