@@ -35,12 +35,13 @@ type NetstatCollectorConfig struct {
 }
 
 type NetstatCollectorMetric struct {
-	name       string
-	index      int
-	tags       map[string]string
-	meta       map[string]string
-	meta_rates map[string]string
-	lastValue  int64
+	name          string
+	index         int
+	tags          map[string]string
+	meta          map[string]string
+	meta_rates    map[string]string
+	lastValue     int64
+	lastTimestamp time.Time
 }
 
 type NetstatCollector struct {
@@ -219,7 +220,7 @@ func (m *NetstatCollector) Read(interval time.Duration, output chan lp.CCMessage
 	// Current time stamp
 	now := time.Now()
 	// time difference to last time stamp
-	timeDiff := now.Sub(m.lastTimestamp).Seconds()
+
 	// Save current timestamp
 	m.lastTimestamp = now
 
@@ -270,6 +271,7 @@ func (m *NetstatCollector) Read(interval time.Duration, output chan lp.CCMessage
 					}
 				}
 				if m.config.SendDerivedValues {
+					timeDiff := now.Sub(metric.lastTimestamp).Seconds()
 					if metric.lastValue >= 0 && v >= metric.lastValue && timeDiff > 0 {
 						rate := float64(v-metric.lastValue) / timeDiff
 						if y, err := lp.NewMetric(metric.name+"_bw", metric.tags, metric.meta_rates, rate, now); err == nil {
@@ -277,6 +279,7 @@ func (m *NetstatCollector) Read(interval time.Duration, output chan lp.CCMessage
 						}
 					}
 					metric.lastValue = v
+					metric.lastTimestamp = now
 				}
 			}
 		}
