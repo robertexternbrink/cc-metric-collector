@@ -9,6 +9,7 @@ package metricRouter
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -87,18 +88,16 @@ func (c *metricCache) Start() {
 		close(c.done)
 	}
 
-	// Rotate cache interval
-	rotate := func(timestamp time.Time) int {
-		oldPeriod := c.curPeriod
-		c.curPeriod = oldPeriod + 1
-		if c.curPeriod >= c.numPeriods {
-			c.curPeriod = 0
-		}
-		c.intervals[oldPeriod].numMetrics = 0
-		c.intervals[oldPeriod].stopstamp = timestamp
-		c.intervals[c.curPeriod].startstamp = timestamp
+	// Capture the completed interval before advancing or reusing its slot.
+	rotate := func(timestamp time.Time) (time.Time, time.Time, []lp.CCMessage) {
 		c.intervals[c.curPeriod].stopstamp = timestamp
-		return oldPeriod
+		start, stop, metrics := c.getPeriodLocked(0)
+		c.curPeriod = (c.curPeriod + 1) % len(c.intervals)
+		next := c.intervals[c.curPeriod]
+		next.numMetrics = 0
+		next.startstamp = timestamp
+		next.stopstamp = timestamp
+		return start, stop, metrics
 	}
 
 	c.wg.Go(func() {
@@ -109,9 +108,7 @@ func (c *metricCache) Start() {
 				return
 			case tick := <-c.tickchan:
 				c.lock.Lock()
-				old := rotate(tick)
-				// Get the last period and evaluate aggregation metrics
-				starttime, endtime, metrics := c.GetPeriod(old)
+				starttime, endtime, metrics := rotate(tick)
 				c.lock.Unlock()
 				if len(metrics) > 0 {
 					c.aggEngine.Eval(starttime, endtime, metrics)
@@ -129,20 +126,18 @@ func (c *metricCache) Start() {
 // The intervals list is used as round-robin buffer and the metric list grows dynamically and
 // to avoid reallocations
 func (c *metricCache) Add(metric lp.CCMessage) {
-	if c.curPeriod >= 0 && c.curPeriod < c.numPeriods {
-		c.lock.Lock()
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if c.curPeriod >= 0 && c.curPeriod < len(c.intervals) {
 		p := c.intervals[c.curPeriod]
 		if p.numMetrics < p.sizeMetrics {
 			p.metrics[p.numMetrics] = metric
-			p.numMetrics++
-			p.stopstamp = metric.Time()
 		} else {
 			p.metrics = append(p.metrics, metric)
-			p.numMetrics++
 			p.sizeMetrics++
-			p.stopstamp = metric.Time()
 		}
-		c.lock.Unlock()
+		p.numMetrics++
+		p.stopstamp = metric.Time()
 	}
 }
 
@@ -158,25 +153,21 @@ func (c *metricCache) DeleteAggregation(name string) error {
 // is the current one, index=1 the last interval and so on. Returns and empty array if a wrong index
 // is given (negative index, index larger than configured number of total intervals, ...)
 func (c *metricCache) GetPeriod(index int) (time.Time, time.Time, []lp.CCMessage) {
-	start := time.Now()
-	stop := time.Now()
-	var metrics []lp.CCMessage
-	if index >= 0 && index < c.numPeriods {
-		pindex := c.curPeriod - index
-		if pindex < 0 {
-			pindex = c.numPeriods - pindex
-		}
-		if pindex >= 0 && pindex < c.numPeriods {
-			start = c.intervals[pindex].startstamp
-			stop = c.intervals[pindex].stopstamp
-			metrics = c.intervals[pindex].metrics
-		} else {
-			metrics = make([]lp.CCMessage, 0)
-		}
-	} else {
-		metrics = make([]lp.CCMessage, 0)
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	return c.getPeriodLocked(index)
+}
+
+// The ring has one current slot and numPeriods completed slots. The caller
+// holds c.lock; return an independent slice so slot reuse cannot alter it.
+func (c *metricCache) getPeriodLocked(index int) (time.Time, time.Time, []lp.CCMessage) {
+	if index < 0 || index > c.numPeriods || len(c.intervals) == 0 {
+		now := time.Now()
+		return now, now, []lp.CCMessage{}
 	}
-	return start, stop, metrics
+	pindex := (c.curPeriod - index + len(c.intervals)) % len(c.intervals)
+	p := c.intervals[pindex]
+	return p.startstamp, p.stopstamp, slices.Clone(p.metrics[:p.numMetrics])
 }
 
 // Close finishes / stops the metric cache
