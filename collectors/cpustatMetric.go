@@ -44,6 +44,38 @@ type CpustatCollector struct {
 	olddata       map[string]map[string]int64
 }
 
+func readCPUStatLines(file *os.File) ([][]string, error) {
+	var lines [][]string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) == 0 || !strings.HasPrefix(fields[0], "cpu") {
+			continue
+		}
+		if fields[0] != "cpu" {
+			if _, err := strconv.Atoi(strings.TrimPrefix(fields[0], "cpu")); err != nil {
+				return nil, fmt.Errorf("invalid CPU identifier %q", fields[0])
+			}
+		}
+		if len(fields) < 5 {
+			return nil, fmt.Errorf("incomplete CPU counters for %s", fields[0])
+		}
+		for index := 1; index < len(fields) && index <= 10; index++ {
+			if _, err := strconv.ParseInt(fields[index], 0, 64); err != nil {
+				return nil, fmt.Errorf("invalid CPU counter for %s: %w", fields[0], err)
+			}
+		}
+		lines = append(lines, fields)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if len(lines) == 0 {
+		return nil, fmt.Errorf("no CPU counters found")
+	}
+	return lines, nil
+}
+
 func (m *CpustatCollector) Init(config json.RawMessage) error {
 	m.name = "CpustatCollector"
 	if err := m.setup(); err != nil {
@@ -92,18 +124,23 @@ func (m *CpustatCollector) Init(config json.RawMessage) error {
 	}
 
 	// Pre-generate tags for all CPUs
-	num_cpus := 0
 	m.cputags = make(map[string]map[string]string)
 	m.olddata = make(map[string]map[string]int64)
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		linefields := strings.Fields(line)
+	lines, err := readCPUStatLines(file)
+	if err != nil {
+		if closeErr := file.Close(); closeErr != nil {
+			cclog.ComponentErrorf(m.name, "Init(): Failed to close file '%s': %v", cpustatInputFile, closeErr)
+		}
+		return fmt.Errorf("%s Init(): Failed to read CPU counters: %w", m.name, err)
+	}
+	for _, linefields := range lines {
 		if strings.Compare(linefields[0], "cpu") == 0 {
 			// Kernel system statistics for all CPUs
 			m.olddata["cpu"] = make(map[string]int64)
 			for k, v := range m.matches {
-				m.olddata["cpu"][k], _ = strconv.ParseInt(linefields[v], 0, 64)
+				if v < len(linefields) {
+					m.olddata["cpu"][k], _ = strconv.ParseInt(linefields[v], 0, 64)
+				}
 			}
 		} else if strings.HasPrefix(linefields[0], "cpu") && strings.Compare(linefields[0], "cpu") != 0 {
 			// Kernel system statistics per CPU
@@ -115,14 +152,11 @@ func (m *CpustatCollector) Init(config json.RawMessage) error {
 			}
 			m.olddata[linefields[0]] = make(map[string]int64)
 			for k, v := range m.matches {
-				m.olddata[linefields[0]][k], _ = strconv.ParseInt(linefields[v], 0, 64)
+				if v < len(linefields) {
+					m.olddata[linefields[0]][k], _ = strconv.ParseInt(linefields[v], 0, 64)
+				}
 			}
-			num_cpus++
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		file.Close()
-		return fmt.Errorf("%s Init(): Call to scanner.Err failed: %s", m.name, err.Error())
 	}
 
 	// Close file
@@ -197,6 +231,7 @@ func (m *CpustatCollector) Read(interval time.Duration, output chan lp.CCMessage
 		cclog.ComponentError(
 			m.name,
 			fmt.Sprintf("Read(): Failed to open file '%s': %v", cpustatInputFile, err.Error()))
+		return
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
@@ -206,22 +241,33 @@ func (m *CpustatCollector) Read(interval time.Duration, output chan lp.CCMessage
 		}
 	}()
 
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		linefields := strings.Fields(line)
+	lines, err := readCPUStatLines(file)
+	if err != nil {
+		cclog.ComponentErrorf(m.name, "Read(): Failed to read CPU counters: %v", err)
+		return
+	}
+	seen := make(map[string]bool, len(lines))
+	for _, linefields := range lines {
+		seen[linefields[0]] = true
 		if strings.Compare(linefields[0], "cpu") == 0 {
 			m.parseStatLine(linefields, m.nodetags, output, now, tsdelta)
 		} else if strings.HasPrefix(linefields[0], "cpu") {
-			if _, exists := m.cputags[linefields[0]]; !exists {
-				m.cputags[linefields[0]] = map[string]string{"type": "hwthread", "type-id": strings.TrimPrefix(linefields[0], "cpu")}
+			if m.cputags[linefields[0]] == nil {
+				cpu, _ := strconv.Atoi(strings.TrimPrefix(linefields[0], "cpu"))
+				m.cputags[linefields[0]] = map[string]string{
+					"type":    "hwthread",
+					"type-id": strconv.Itoa(cpu),
+				}
 			}
 			m.parseStatLine(linefields, m.cputags[linefields[0]], output, now, tsdelta)
 			num_cpus++
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		cclog.ComponentErrorf(m.name, "Init(): Call to scanner.Err failed: %s", err.Error())
+	for cpu := range m.olddata {
+		if !seen[cpu] {
+			delete(m.olddata, cpu)
+			delete(m.cputags, cpu)
+		}
 	}
 
 	if !m.config.excludeNumCPUs {
