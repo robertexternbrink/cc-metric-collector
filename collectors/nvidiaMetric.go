@@ -743,7 +743,7 @@ func readRemappedRows(device *NvidiaCollectorDevice, output chan lp.CCMessage) e
 				}
 			}
 			if !device.excludeMetrics["nv_remapped_rows_uncorrected"] {
-				y, err := lp.NewMetric("nv_remapped_rows_corrected", device.tags, device.meta, float64(uncorrected), time.Now())
+				y, err := lp.NewMetric("nv_remapped_rows_uncorrected", device.tags, device.meta, float64(uncorrected), time.Now())
 				if err == nil {
 					output <- y
 				}
