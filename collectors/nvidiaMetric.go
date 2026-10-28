@@ -60,8 +60,7 @@ func (m *NvidiaCollector) CatchPanic() {
 	}
 }
 
-func (m *NvidiaCollector) Init(config json.RawMessage) error {
-	var err error
+func (m *NvidiaCollector) Init(config json.RawMessage) (err error) {
 	m.name = "NvidiaCollector"
 	m.config.AddPciInfoTag = false
 	m.config.UsePciInfoAsTypeId = false
@@ -83,7 +82,20 @@ func (m *NvidiaCollector) Init(config json.RawMessage) error {
 		"group":  "Nvidia",
 	}
 
-	defer m.CatchPanic()
+	nvmlInitialized := false
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("%s Init(): NVML initialization panicked: %v", m.name, recovered)
+		}
+		if err != nil {
+			m.init = false
+			if nvmlInitialized {
+				if ret := nvml.Shutdown(); ret != nvml.SUCCESS {
+					err = fmt.Errorf("%w; NVML cleanup failed: %s", err, nvml.ErrorString(ret))
+				}
+			}
+		}
+	}()
 
 	// Initialize NVIDIA Management Library (NVML)
 	ret := nvml.Init()
@@ -97,6 +109,8 @@ func (m *NvidiaCollector) Init(config json.RawMessage) error {
 		err = errors.New(nvml.ErrorString(ret))
 		return fmt.Errorf("%s Init(): Unable to initialize NVML: %w", m.name, err)
 	}
+
+	nvmlInitialized = true
 
 	// Number of NVIDIA GPUs
 	num_gpus, ret := nvml.DeviceGetCount()
