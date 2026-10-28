@@ -254,7 +254,7 @@ func (r *metricRouter) Start() {
 		// even if the metric is dropped, it is stored in the cache for
 		// aggregations
 		if r.config.NumCacheIntervals > 0 {
-			r.cache.Add(m)
+			r.cache.Add(p)
 		}
 	}
 
