@@ -157,7 +157,8 @@ func (m *NfsIOStatCollector) Read(interval time.Duration, output chan lp.CCMessa
 						output <- msg
 					}
 				}
-				if m.config.SendDerivedValues {
+				_, known := old[name]
+				if m.config.SendDerivedValues && known {
 					rate := float64(newVal-old[name]) / timeDiff
 					msg, err := lp.NewMetric(fmt.Sprintf("nfsio_%s_bw", name), m.tags, m.meta, rate, now)
 					if err == nil {
