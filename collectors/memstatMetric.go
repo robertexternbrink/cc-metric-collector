@@ -61,6 +61,7 @@ func getStats(filename string) map[string]MemstatStats {
 	file, err := os.Open(filename)
 	if err != nil {
 		cclog.Error(err.Error())
+		return nil
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
@@ -87,6 +88,10 @@ func getStats(filename string) map[string]MemstatStats {
 			unit = linefields[2]
 		}
 		stats[strings.TrimSuffix(linefields[0], ":")] = MemstatStats{value: v, unit: unit}
+	}
+	if err := scanner.Err(); err != nil {
+		cclog.Error(err.Error())
+		return nil
 	}
 	return stats
 }
@@ -204,13 +209,14 @@ func (m *MemstatCollector) Read(interval time.Duration, output chan lp.CCMessage
 
 	sendStats := func(stats map[string]MemstatStats, tags map[string]string) {
 		for match, name := range m.matches {
-			var value float64 = 0
+			v, exists := stats[match]
+			if !exists {
+				continue
+			}
+			value := v.value
 			unit := ""
-			if v, ok := stats[match]; ok {
-				value = v.value
-				if len(v.unit) > 0 {
-					unit = v.unit
-				}
+			if len(v.unit) > 0 {
+				unit = v.unit
 			}
 
 			y, err := lp.NewMetric(name, tags, m.meta, value, time.Now())
@@ -222,6 +228,11 @@ func (m *MemstatCollector) Read(interval time.Duration, output chan lp.CCMessage
 			}
 		}
 		if m.sendMemUsed {
+			_, haveTotal := stats["MemTotal"]
+			_, haveFree := stats["MemFree"]
+			if !haveTotal || !haveFree {
+				return
+			}
 			memUsed := 0.0
 			unit := ""
 			if totalVal, total := stats["MemTotal"]; total {
