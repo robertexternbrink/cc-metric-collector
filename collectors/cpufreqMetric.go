@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -129,6 +130,12 @@ func (m *CPUFreqCollector) Read(interval time.Duration, output chan lp.CCMessage
 			continue
 		}
 
+		// scaling_cur_freq is in kHz; keep the declared Hz unit and int64 output.
+		if cpuFreq > math.MaxInt64/1000 || cpuFreq < math.MinInt64/1000 {
+			cclog.ComponentErrorf(m.name, "Read(): CPU frequency cannot be represented in Hz: %d", cpuFreq)
+			continue
+		}
+		cpuFreq *= 1000
 		if y, err := lp.NewMetric("cpufreq", t.tagSet, m.meta, cpuFreq, now); err == nil {
 			output <- y
 		}

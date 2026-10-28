@@ -20,6 +20,8 @@ import (
 	lp "github.com/ClusterCockpit/cc-lib/v2/ccMessage"
 )
 
+var cpuInfoOpenFile = os.Open
+
 // CPUFreqCollector
 // a metric collector to measure the current frequency of the CPUs
 // as obtained from /proc/cpuinfo
@@ -30,6 +32,7 @@ type CPUFreqCpuInfoCollectorTopology struct {
 }
 
 type CPUFreqCpuInfoCollector struct {
+	cpuInfoFile string
 	metricCollector
 
 	topology []CPUFreqCpuInfoCollectorTopology
@@ -52,8 +55,11 @@ func (m *CPUFreqCpuInfoCollector) Init(_ json.RawMessage) error {
 		"unit":   "MHz",
 	}
 
-	const cpuInfoFile = "/proc/cpuinfo"
-	file, err := os.Open(cpuInfoFile)
+	cpuInfoFile := m.cpuInfoFile
+	if cpuInfoFile == "" {
+		cpuInfoFile = "/proc/cpuinfo"
+	}
+	file, err := cpuInfoOpenFile(cpuInfoFile)
 	if err != nil {
 		return fmt.Errorf("%s Init(): failed to open file '%s': %w", m.name, cpuInfoFile, err)
 	}
@@ -117,6 +123,7 @@ func (m *CPUFreqCpuInfoCollector) Init(_ json.RawMessage) error {
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		file.Close()
 		return fmt.Errorf("%s Init(): Call to scanner.Err failed: %w", m.name, err)
 	}
 
@@ -139,8 +146,11 @@ func (m *CPUFreqCpuInfoCollector) Read(interval time.Duration, output chan lp.CC
 		return
 	}
 
-	const cpuInfoFile = "/proc/cpuinfo"
-	file, err := os.Open(cpuInfoFile)
+	cpuInfoFile := m.cpuInfoFile
+	if cpuInfoFile == "" {
+		cpuInfoFile = "/proc/cpuinfo"
+	}
+	file, err := cpuInfoOpenFile(cpuInfoFile)
 	if err != nil {
 		cclog.ComponentError(
 			m.name,
@@ -155,7 +165,11 @@ func (m *CPUFreqCpuInfoCollector) Read(interval time.Duration, output chan lp.CC
 		}
 	}()
 
-	processorCounter := 0
+	topologyByProcessor := make(map[string]CPUFreqCpuInfoCollectorTopology, len(m.topology))
+	for _, entry := range m.topology {
+		topologyByProcessor[entry.tagSet["type-id"]] = entry
+	}
+	processor := ""
 	now := time.Now()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -163,9 +177,15 @@ func (m *CPUFreqCpuInfoCollector) Read(interval time.Duration, output chan lp.CC
 		if len(lineSplit) == 2 {
 			key := strings.TrimSpace(lineSplit[0])
 
-			// frequency
+			if key == "processor" {
+				processor = strings.TrimSpace(lineSplit[1])
+			}
+			// Match the current processor ID, not its position in the old snapshot.
 			if key == "cpu MHz" {
-				t := m.topology[processorCounter]
+				t, known := topologyByProcessor[processor]
+				if !known {
+					continue
+				}
 				if !t.isHT {
 					value, err := strconv.ParseFloat(strings.TrimSpace(lineSplit[1]), 64)
 					if err != nil {
@@ -178,7 +198,6 @@ func (m *CPUFreqCpuInfoCollector) Read(interval time.Duration, output chan lp.CC
 						output <- y
 					}
 				}
-				processorCounter++
 			}
 		}
 	}
