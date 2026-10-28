@@ -33,6 +33,7 @@ type NfsIOStatCollectorConfig struct {
 // This contains all variables we need during execution and the variables
 // defined by metricCollector (name, init, ...)
 type NfsIOStatCollector struct {
+	mountstatsFile string
 	metricCollector
 
 	config        NfsIOStatCollectorConfig    // the configuration structure
@@ -63,7 +64,10 @@ func resolve_regex_fields(s string, regex *regexp.Regexp) map[string]string {
 
 func (m *NfsIOStatCollector) readNfsiostats() map[string]map[string]int64 {
 	data := make(map[string]map[string]int64)
-	filename := "/proc/self/mountstats"
+	filename := m.mountstatsFile
+	if filename == "" {
+		filename = "/proc/self/mountstats"
+	}
 	stats, err := os.ReadFile(filename)
 	if err != nil {
 		return data
@@ -75,6 +79,7 @@ func (m *NfsIOStatCollector) readNfsiostats() map[string]map[string]int64 {
 		// Is this a device line with mount point, remote target and NFS version?
 		dev := resolve_regex_fields(l, deviceRegex)
 		if len(dev) > 0 {
+			current = nil
 			if !slices.Contains(m.config.ExcludeFilesystems, dev[m.key]) {
 				current = dev
 				if len(current["version"]) == 0 {
