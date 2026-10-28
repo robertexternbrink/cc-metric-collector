@@ -24,6 +24,9 @@ import (
 
 const NETSTATFILE = "/proc/net/dev"
 
+var netstatInputFile = NETSTATFILE
+var netstatOpenFile = os.Open
+
 type NetstatCollectorConfig struct {
 	IncludeDevices     []string            `json:"include_devices"`
 	SendAbsoluteValues bool                `json:"send_abs_values"`
@@ -110,9 +113,9 @@ func (m *NetstatCollector) Init(config json.RawMessage) error {
 	m.buildAliasMapping()
 
 	// Check access to net statistic file
-	file, err := os.Open(NETSTATFILE)
+	file, err := netstatOpenFile(netstatInputFile)
 	if err != nil {
-		return fmt.Errorf("%s Init(): failed to open netstat file \"%s\": %w", m.name, NETSTATFILE, err)
+		return fmt.Errorf("%s Init(): failed to open netstat file \"%s\": %w", m.name, netstatInputFile, err)
 	}
 
 	scanner := bufio.NewScanner(file)
@@ -199,7 +202,7 @@ func (m *NetstatCollector) Init(config json.RawMessage) error {
 
 	// Close netstat file
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("%s Init(): failed to close netstat file \"%s\": %w", m.name, NETSTATFILE, err)
+		return fmt.Errorf("%s Init(): failed to close netstat file \"%s\": %w", m.name, netstatInputFile, err)
 	}
 
 	if len(m.matches) == 0 {
@@ -220,18 +223,18 @@ func (m *NetstatCollector) Read(interval time.Duration, output chan lp.CCMessage
 	// Save current timestamp
 	m.lastTimestamp = now
 
-	file, err := os.Open(NETSTATFILE)
+	file, err := netstatOpenFile(netstatInputFile)
 	if err != nil {
 		cclog.ComponentError(
 			m.name,
-			fmt.Sprintf("Read(): Failed to open file '%s': %v", NETSTATFILE, err))
+			fmt.Sprintf("Read(): Failed to open file '%s': %v", netstatInputFile, err))
 		return
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
 			cclog.ComponentError(
 				m.name,
-				fmt.Sprintf("Read(): Failed to close file '%s': %v", NETSTATFILE, err))
+				fmt.Sprintf("Read(): Failed to close file '%s': %v", netstatInputFile, err))
 		}
 	}()
 
@@ -267,7 +270,7 @@ func (m *NetstatCollector) Read(interval time.Duration, output chan lp.CCMessage
 					}
 				}
 				if m.config.SendDerivedValues {
-					if metric.lastValue >= 0 {
+					if metric.lastValue >= 0 && v >= metric.lastValue && timeDiff > 0 {
 						rate := float64(v-metric.lastValue) / timeDiff
 						if y, err := lp.NewMetric(metric.name+"_bw", metric.tags, metric.meta_rates, rate, now); err == nil {
 							output <- y
