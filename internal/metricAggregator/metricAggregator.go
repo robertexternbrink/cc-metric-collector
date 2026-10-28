@@ -273,10 +273,12 @@ func (c *metricAggregator) Eval(starttime time.Time, endtime time.Time, metrics 
 			case string:
 				m, err = lp.NewMessage(f.Name, tags, meta, map[string]any{"value": t}, starttime)
 			default:
-				cclog.ComponentErrorf("MetricCache", "Gval returned invalid type %s skipping metric %s", t, f.Name)
+				cclog.ComponentErrorf("MetricCache", "Gval returned invalid type %T skipping metric %s", t, f.Name)
+				continue
 			}
 			if err != nil {
 				cclog.ComponentErrorf("MetricCache", "Cannot create metric from Gval result %v: %s", value, err.Error())
+				continue
 			}
 			cclog.ComponentDebugf("MetricCache", "SEND %s", m.ToLineProtocol(nil))
 			select {
