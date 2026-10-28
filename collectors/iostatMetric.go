@@ -129,10 +129,12 @@ func (m *IOstatCollector) Init(config json.RawMessage) error {
 			lastValues:    lastValues,
 		}
 	}
-	if err := scanner.Err(); err != nil {
+	scanErr := scanner.Err()
+	closeErr := file.Close()
+	if err := scanErr; err != nil {
 		return fmt.Errorf("%s Init(): Failed to scan content of file %q: %s", m.name, iostatInputFile, err.Error())
 	}
-	if err := file.Close(); err != nil {
+	if err := closeErr; err != nil {
 		return fmt.Errorf("%s Init(): Failed to close file \"%s\": %s", m.name, iostatInputFile, err.Error())
 	}
 
