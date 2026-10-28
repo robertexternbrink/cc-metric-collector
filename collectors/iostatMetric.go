@@ -190,6 +190,11 @@ func (m *IOstatCollector) Read(interval time.Duration, output chan lp.CCMessage)
 			if idx < len(linefields) {
 				x, err := strconv.ParseInt(linefields[idx], 0, 64)
 				if err == nil {
+					if name != "io_ioops" && x < entry.currentValues[name] {
+						entry.lastValues[name] = entry.currentValues[name]
+						entry.currentValues[name] = x
+						continue
+					}
 					// Calculate difference using previous current and new value
 					diff := x - entry.currentValues[name]
 					if name == "io_ioops" {
