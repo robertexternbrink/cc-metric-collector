@@ -460,12 +460,14 @@ func readPowerUsage(device *NvidiaCollectorDevice, output chan lp.CCMessage) err
 	return nil
 }
 
+var nvidiaNow = time.Now
+
 func readEnergyConsumption(device *NvidiaCollectorDevice, output chan lp.CCMessage) error {
 	// Retrieves total energy consumption for this GPU in millijoules (mJ) since the driver was last reloaded
 
 	// For Volta or newer fully supported devices.
-	if (!device.excludeMetrics["nv_energy"]) && (!device.excludeMetrics["nv_energy_abs"]) && (!device.excludeMetrics["nv_average_power"]) {
-		now := time.Now()
+	if !device.excludeMetrics["nv_energy"] || !device.excludeMetrics["nv_energy_abs"] || !device.excludeMetrics["nv_average_power"] {
+		now := nvidiaNow()
 		mode, ret := nvml.DeviceGetPowerManagementMode(device.device)
 		if ret != nvml.SUCCESS {
 			return nil
@@ -505,7 +507,7 @@ func readEnergyConsumption(device *NvidiaCollectorDevice, output chan lp.CCMessa
 					}
 				}
 				device.lastEnergyReading = energy
-				device.lastEnergyTimestamp = time.Now()
+				device.lastEnergyTimestamp = nvidiaNow()
 			}
 		}
 	}
