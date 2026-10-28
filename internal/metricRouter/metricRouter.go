@@ -340,16 +340,15 @@ func (r *metricRouter) AddOutput(output chan lp.CCMessage) {
 // Close finishes / stops the metric router
 func (r *metricRouter) Close() {
 	cclog.ComponentDebug("MetricRouter", "CLOSE")
-	r.done <- true
-	// wait for close of channel r.done
-	<-r.done
-
 	// stop metric cache
 	if r.config.NumCacheIntervals > 0 {
 		cclog.ComponentDebug("MetricRouter", "CACHE CLOSE")
 		r.cache.Close()
 		r.cachewg.Wait()
 	}
+	// Keep the router consuming final cache output until cache evaluation exits.
+	r.done <- true
+	<-r.done
 }
 
 // New creates a new initialized metric router
