@@ -80,6 +80,10 @@ func (m *InfinibandCollector) Init(config json.RawMessage) error {
 	if m.init {
 		return nil
 	}
+	// Each initialization starts with current ports, defaults and fresh baselines.
+	m.info = nil
+	m.config = (InfinibandCollector{}).config
+	m.lastTimestamp = time.Time{}
 
 	if m.sources.glob == nil {
 		m.sources.glob = filepath.Glob
