@@ -72,25 +72,21 @@ func getStats(filename string) map[string]MemstatStats {
 	for scanner.Scan() {
 		line := scanner.Text()
 		linefields := strings.Fields(line)
-		switch len(linefields) {
-		case 3:
-			v, err := strconv.ParseFloat(linefields[1], 64)
-			if err == nil {
-				stats[strings.Trim(linefields[0], ":")] = MemstatStats{
-					value: v,
-					unit:  linefields[2],
-				}
-			}
-		case 5:
-			v, err := strconv.ParseFloat(linefields[3], 64)
-			if err == nil {
-				cclog.ComponentDebug("getStats", strings.Trim(linefields[2], ":"), v, linefields[4])
-				stats[strings.Trim(linefields[2], ":")] = MemstatStats{
-					value: v,
-					unit:  linefields[4],
-				}
-			}
+		if len(linefields) >= 2 && linefields[0] == "Node" {
+			linefields = linefields[2:]
 		}
+		if len(linefields) != 2 && len(linefields) != 3 {
+			continue
+		}
+		v, err := strconv.ParseFloat(linefields[1], 64)
+		if err != nil {
+			continue
+		}
+		unit := ""
+		if len(linefields) == 3 {
+			unit = linefields[2]
+		}
+		stats[strings.TrimSuffix(linefields[0], ":")] = MemstatStats{value: v, unit: unit}
 	}
 	return stats
 }
