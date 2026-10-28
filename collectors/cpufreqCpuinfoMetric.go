@@ -165,7 +165,11 @@ func (m *CPUFreqCpuInfoCollector) Read(interval time.Duration, output chan lp.CC
 		}
 	}()
 
-	processorCounter := 0
+	topologyByProcessor := make(map[string]CPUFreqCpuInfoCollectorTopology, len(m.topology))
+	for _, entry := range m.topology {
+		topologyByProcessor[entry.tagSet["type-id"]] = entry
+	}
+	processor := ""
 	now := time.Now()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -173,9 +177,15 @@ func (m *CPUFreqCpuInfoCollector) Read(interval time.Duration, output chan lp.CC
 		if len(lineSplit) == 2 {
 			key := strings.TrimSpace(lineSplit[0])
 
-			// frequency
+			if key == "processor" {
+				processor = strings.TrimSpace(lineSplit[1])
+			}
+			// Match the current processor ID, not its position in the old snapshot.
 			if key == "cpu MHz" {
-				t := m.topology[processorCounter]
+				t, known := topologyByProcessor[processor]
+				if !known {
+					continue
+				}
 				if !t.isHT {
 					value, err := strconv.ParseFloat(strings.TrimSpace(lineSplit[1]), 64)
 					if err != nil {
@@ -188,7 +198,6 @@ func (m *CPUFreqCpuInfoCollector) Read(interval time.Duration, output chan lp.CC
 						output <- y
 					}
 				}
-				processorCounter++
 			}
 		}
 	}
