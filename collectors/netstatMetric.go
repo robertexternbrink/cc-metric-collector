@@ -50,7 +50,6 @@ type NetstatCollector struct {
 	config           NetstatCollectorConfig
 	aliasToCanonical map[string]string
 	matches          map[string][]NetstatCollectorMetric
-	lastTimestamp    time.Time
 }
 
 func (m *NetstatCollector) buildAliasMapping() {
@@ -69,14 +68,7 @@ func getCanonicalName(raw string, aliasToCanonical map[string]string) string {
 	return raw
 }
 
-func (m *NetstatCollector) Init(config json.RawMessage) error {
-	m.name = "NetstatCollector"
-	m.parallel = true
-	if err := m.setup(); err != nil {
-		return fmt.Errorf("%s Init(): setup() call failed: %w", m.name, err)
-	}
-	m.lastTimestamp = time.Now()
-
+func (m *NetstatCollector) newInterfaceMetrics(raw string) []NetstatCollectorMetric {
 	const (
 		fieldInterface = iota
 		fieldReceiveBytes
@@ -96,6 +88,76 @@ func (m *NetstatCollector) Init(config json.RawMessage) error {
 		fieldTransmitCarrier
 		fieldTransmitCompressed
 	)
+
+	// Tag will contain original device name (raw).
+	tags := map[string]string{
+		"stype":    "network",
+		"stype-id": raw,
+		"type":     "node",
+	}
+	meta_unit_byte := map[string]string{
+		"source": m.name,
+		"group":  "Network",
+		"unit":   "bytes",
+	}
+	meta_unit_byte_per_sec := map[string]string{
+		"source": m.name,
+		"group":  "Network",
+		"unit":   "bytes/sec",
+	}
+	meta_unit_pkts := map[string]string{
+		"source": m.name,
+		"group":  "Network",
+		"unit":   "packets",
+	}
+	meta_unit_pkts_per_sec := map[string]string{
+		"source": m.name,
+		"group":  "Network",
+		"unit":   "packets/sec",
+	}
+
+	return []NetstatCollectorMetric{
+		{
+			name:       "net_bytes_in",
+			index:      fieldReceiveBytes,
+			lastValue:  -1,
+			tags:       tags,
+			meta:       meta_unit_byte,
+			meta_rates: meta_unit_byte_per_sec,
+		},
+		{
+			name:       "net_pkts_in",
+			index:      fieldReceivePackets,
+			lastValue:  -1,
+			tags:       tags,
+			meta:       meta_unit_pkts,
+			meta_rates: meta_unit_pkts_per_sec,
+		},
+		{
+			name:       "net_bytes_out",
+			index:      fieldTransmitBytes,
+			lastValue:  -1,
+			tags:       tags,
+			meta:       meta_unit_byte,
+			meta_rates: meta_unit_byte_per_sec,
+		},
+		{
+			name:       "net_pkts_out",
+			index:      fieldTransmitPackets,
+			lastValue:  -1,
+			tags:       tags,
+			meta:       meta_unit_pkts,
+			meta_rates: meta_unit_pkts_per_sec,
+		},
+	}
+}
+
+func (m *NetstatCollector) Init(config json.RawMessage) error {
+	m.name = "NetstatCollector"
+	m.parallel = true
+	if err := m.setup(); err != nil {
+		return fmt.Errorf("%s Init(): setup() call failed: %w", m.name, err)
+	}
 
 	m.matches = make(map[string][]NetstatCollectorMetric)
 
@@ -137,73 +199,12 @@ func (m *NetstatCollector) Init(config json.RawMessage) error {
 
 		// Check if device is a included device
 		if slices.Contains(m.config.IncludeDevices, canonical) {
-			// Tag will contain original device name (raw).
-			tags := map[string]string{
-				"stype":    "network",
-				"stype-id": raw,
-				"type":     "node",
-			}
-			meta_unit_byte := map[string]string{
-				"source": m.name,
-				"group":  "Network",
-				"unit":   "bytes",
-			}
-			meta_unit_byte_per_sec := map[string]string{
-				"source": m.name,
-				"group":  "Network",
-				"unit":   "bytes/sec",
-			}
-			meta_unit_pkts := map[string]string{
-				"source": m.name,
-				"group":  "Network",
-				"unit":   "packets",
-			}
-			meta_unit_pkts_per_sec := map[string]string{
-				"source": m.name,
-				"group":  "Network",
-				"unit":   "packets/sec",
-			}
-
-			m.matches[canonical] = []NetstatCollectorMetric{
-				{
-					name:       "net_bytes_in",
-					index:      fieldReceiveBytes,
-					lastValue:  -1,
-					tags:       tags,
-					meta:       meta_unit_byte,
-					meta_rates: meta_unit_byte_per_sec,
-				},
-				{
-					name:       "net_pkts_in",
-					index:      fieldReceivePackets,
-					lastValue:  -1,
-					tags:       tags,
-					meta:       meta_unit_pkts,
-					meta_rates: meta_unit_pkts_per_sec,
-				},
-				{
-					name:       "net_bytes_out",
-					index:      fieldTransmitBytes,
-					lastValue:  -1,
-					tags:       tags,
-					meta:       meta_unit_byte,
-					meta_rates: meta_unit_byte_per_sec,
-				},
-				{
-					name:       "net_pkts_out",
-					index:      fieldTransmitPackets,
-					lastValue:  -1,
-					tags:       tags,
-					meta:       meta_unit_pkts,
-					meta_rates: meta_unit_pkts_per_sec,
-				},
-			}
+			m.matches[raw] = m.newInterfaceMetrics(raw)
 		}
 	}
 
-	// Close netstat file
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("%s Init(): failed to close netstat file \"%s\": %w", m.name, netstatInputFile, err)
+		return err
 	}
 
 	if len(m.matches) == 0 {
@@ -219,10 +220,6 @@ func (m *NetstatCollector) Read(interval time.Duration, output chan lp.CCMessage
 	}
 	// Current time stamp
 	now := time.Now()
-	// time difference to last time stamp
-
-	// Save current timestamp
-	m.lastTimestamp = now
 
 	file, err := netstatOpenFile(netstatInputFile)
 	if err != nil {
@@ -255,11 +252,26 @@ func (m *NetstatCollector) Read(interval time.Duration, output chan lp.CCMessage
 		raw := strings.Trim(f[0], ":")
 		canonical := getCanonicalName(raw, m.aliasToCanonical)
 
-		// Check if device is a included device
-		if devmetrics, ok := m.matches[canonical]; ok {
+		devmetrics, ok := m.matches[raw]
+		if !ok {
+			// A raw alias may change within an already initialized selection group.
+			for knownRaw := range m.matches {
+				if getCanonicalName(knownRaw, m.aliasToCanonical) == canonical {
+					devmetrics = m.newInterfaceMetrics(raw)
+					m.matches[raw] = devmetrics
+					ok = true
+					break
+				}
+			}
+		}
+		if ok {
 			for i := range devmetrics {
 				metric := &devmetrics[i]
 
+				// An incomplete observation leaves this counter baseline untouched.
+				if metric.index >= len(f) {
+					continue
+				}
 				// Read value
 				v, err := strconv.ParseInt(f[metric.index], 10, 64)
 				if err != nil {
@@ -283,6 +295,9 @@ func (m *NetstatCollector) Read(interval time.Duration, output chan lp.CCMessage
 				}
 			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		cclog.ComponentError(m.name, fmt.Sprintf("Read(): Failed to scan netstat file: %v", err))
 	}
 }
 
