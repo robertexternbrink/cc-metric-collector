@@ -53,8 +53,9 @@ func (m *nfsCollector) updateStats() error {
 		return err
 	}
 
+	next := make(map[string]NfsCollectorData, len(m.data))
 	for name, data := range m.data {
-		m.data[name] = NfsCollectorData{
+		next[name] = NfsCollectorData{
 			last:    data.current,
 			current: -1,
 		}
@@ -74,16 +75,17 @@ func (m *nfsCollector) updateStats() error {
 			return err
 		}
 
-		collectorData, exist := m.data[name]
+		collectorData, exist := next[name]
 		collectorData.current = value
 
 		if !exist {
 			collectorData.last = -1
 		}
 
-		m.data[name] = collectorData
+		next[name] = collectorData
 	}
 
+	m.data = next
 	return nil
 }
 
@@ -142,11 +144,11 @@ func (m *nfsCollector) Read(interval time.Duration, output chan lp.CCMessage) {
 	}
 
 	for name, data := range m.data {
-		if slices.Contains(m.config.ExcludeMetrics, name) {
+		if slices.Contains(m.config.ExcludeMetrics, name) || slices.Contains(m.config.ExcludeMetrics, prefix+"_"+name) {
 			continue
 		}
 
-		if data.current >= 0 && data.last >= 0 {
+		if data.current >= data.last && data.last >= 0 {
 			value := data.current - data.last
 			y, err := lp.NewMetric(fmt.Sprintf("%s_%s", prefix, name), m.tags, m.meta, value, timestamp)
 			if err == nil {
