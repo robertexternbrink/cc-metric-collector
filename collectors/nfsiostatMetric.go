@@ -33,6 +33,7 @@ type NfsIOStatCollectorConfig struct {
 // This contains all variables we need during execution and the variables
 // defined by metricCollector (name, init, ...)
 type NfsIOStatCollector struct {
+	mountstatsFile string
 	metricCollector
 
 	config        NfsIOStatCollectorConfig    // the configuration structure
@@ -41,6 +42,7 @@ type NfsIOStatCollector struct {
 	data          map[string]map[string]int64 // data storage for difference calculation
 	key           string                      // which device info should be used as subtype ID? 'server' or 'mntpoint'
 	lastTimestamp time.Time
+	timestamps    map[string]map[string]time.Time // successful observation time per counter
 }
 
 var (
@@ -63,7 +65,10 @@ func resolve_regex_fields(s string, regex *regexp.Regexp) map[string]string {
 
 func (m *NfsIOStatCollector) readNfsiostats() map[string]map[string]int64 {
 	data := make(map[string]map[string]int64)
-	filename := "/proc/self/mountstats"
+	filename := m.mountstatsFile
+	if filename == "" {
+		filename = "/proc/self/mountstats"
+	}
 	stats, err := os.ReadFile(filename)
 	if err != nil {
 		return data
@@ -72,6 +77,10 @@ func (m *NfsIOStatCollector) readNfsiostats() map[string]map[string]int64 {
 	lines := strings.Split(string(stats), "\n")
 	var current map[string]string = nil
 	for _, l := range lines {
+		// A new device block cannot supply bytes for the previous device.
+		if strings.HasPrefix(strings.TrimSpace(l), "device ") {
+			current = nil
+		}
 		// Is this a device line with mount point, remote target and NFS version?
 		dev := resolve_regex_fields(l, deviceRegex)
 		if len(dev) > 0 {
@@ -128,13 +137,19 @@ func (m *NfsIOStatCollector) Init(config json.RawMessage) error {
 	}
 	m.data = m.readNfsiostats()
 	m.lastTimestamp = time.Now()
+	m.timestamps = make(map[string]map[string]time.Time, len(m.data))
+	for mntpoint, values := range m.data {
+		m.timestamps[mntpoint] = make(map[string]time.Time, len(values))
+		for name := range values {
+			m.timestamps[mntpoint][name] = m.lastTimestamp
+		}
+	}
 	m.init = true
 	return nil
 }
 
 func (m *NfsIOStatCollector) Read(interval time.Duration, output chan lp.CCMessage) {
 	now := time.Now()
-	timeDiff := now.Sub(m.lastTimestamp).Seconds()
 	m.lastTimestamp = now
 
 	// Get the current values for all mountpoints
@@ -143,6 +158,7 @@ func (m *NfsIOStatCollector) Read(interval time.Duration, output chan lp.CCMessa
 	for mntpoint, values := range newdata {
 		// Was the mount point already present in the last iteration
 		if old, ok := m.data[mntpoint]; ok {
+			times := m.timestamps[mntpoint]
 			for name, newVal := range values {
 				if m.config.SendAbsoluteValues {
 					msg, err := lp.NewMetric("nfsio_"+name, m.tags, m.meta, newVal, now)
@@ -152,8 +168,10 @@ func (m *NfsIOStatCollector) Read(interval time.Duration, output chan lp.CCMessa
 						output <- msg
 					}
 				}
-				if m.config.SendDerivedValues {
-					rate := float64(newVal-old[name]) / timeDiff
+				previous, known := old[name]
+				timeDiff := now.Sub(times[name]).Seconds()
+				if m.config.SendDerivedValues && known && newVal >= previous && timeDiff > 0 {
+					rate := float64(newVal-previous) / timeDiff
 					msg, err := lp.NewMetric(fmt.Sprintf("nfsio_%s_bw", name), m.tags, m.meta, rate, now)
 					if err == nil {
 						if strings.HasPrefix(name, "page") {
@@ -167,10 +185,15 @@ func (m *NfsIOStatCollector) Read(interval time.Duration, output chan lp.CCMessa
 					}
 				}
 				old[name] = newVal
+				times[name] = now
 			}
 		} else {
 			// First time we see this mount point, store all values
 			m.data[mntpoint] = values
+			m.timestamps[mntpoint] = make(map[string]time.Time, len(values))
+			for name := range values {
+				m.timestamps[mntpoint][name] = now
+			}
 		}
 	}
 	// Reset entries that do not exist anymore
@@ -184,6 +207,7 @@ func (m *NfsIOStatCollector) Read(interval time.Duration, output chan lp.CCMessa
 		}
 		if !found {
 			delete(m.data, mntpoint)
+			delete(m.timestamps, mntpoint)
 		}
 	}
 }
