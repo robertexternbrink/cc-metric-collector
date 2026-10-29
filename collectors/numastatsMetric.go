@@ -20,6 +20,8 @@ type NUMAStatsCollectorConfig struct {
 	SendDerivedValues  bool `json:"send_derived_values"`
 }
 
+var numaStatsNow = time.Now
+
 // Non-Uniform Memory Access (NUMA) policy hit/miss statistics
 //
 // numa_hit:
@@ -53,17 +55,17 @@ type NUMAStatsCollectorConfig struct {
 //
 // See: https://www.kernel.org/doc/html/latest/admin-guide/numastat.html
 type NUMAStatsCollectorTopolgy struct {
-	file           string
-	tagSet         map[string]string
-	previousValues map[string]int64
+	file               string
+	tagSet             map[string]string
+	previousValues     map[string]int64
+	previousTimestamps map[string]time.Time
 }
 
 type NUMAStatsCollector struct {
 	metricCollector
 
-	topology      []NUMAStatsCollectorTopolgy
-	config        NUMAStatsCollectorConfig
-	lastTimestamp time.Time
+	topology []NUMAStatsCollectorTopolgy
+	config   NUMAStatsCollectorConfig
 }
 
 func (m *NUMAStatsCollector) Init(config json.RawMessage) error {
@@ -112,7 +114,8 @@ func (m *NUMAStatsCollector) Init(config json.RawMessage) error {
 					"type":    "memoryDomain",
 					"type-id": node,
 				},
-				previousValues: make(map[string]int64),
+				previousValues:     make(map[string]int64),
+				previousTimestamps: make(map[string]time.Time),
 			})
 	}
 
@@ -127,13 +130,17 @@ func (m *NUMAStatsCollector) Read(interval time.Duration, output chan lp.CCMessa
 		return
 	}
 
-	now := time.Now()
-	timeDiff := now.Sub(m.lastTimestamp).Seconds()
-	m.lastTimestamp = now
+	now := numaStatsNow()
 
 	for i := range m.topology {
 		// Loop for all NUMA domains
 		t := &m.topology[i]
+		if t.previousValues == nil {
+			t.previousValues = make(map[string]int64)
+		}
+		if t.previousTimestamps == nil {
+			t.previousTimestamps = make(map[string]time.Time)
+		}
 
 		file, err := os.Open(t.file)
 		if err != nil {
@@ -175,7 +182,9 @@ func (m *NUMAStatsCollector) Read(interval time.Duration, output chan lp.CCMessa
 
 			if m.config.SendDerivedValues {
 				prev, ok := t.previousValues[key]
-				if ok {
+				previousTime, haveTime := t.previousTimestamps[key]
+				timeDiff := now.Sub(previousTime).Seconds()
+				if ok && haveTime && value >= prev && timeDiff > 0 {
 					rate := float64(value-prev) / timeDiff
 					msg, err := lp.NewMetric(
 						"numastats_"+key+"_rate",
@@ -189,6 +198,7 @@ func (m *NUMAStatsCollector) Read(interval time.Duration, output chan lp.CCMessa
 					}
 				}
 				t.previousValues[key] = value
+				t.previousTimestamps[key] = now
 			}
 		}
 		if err := file.Close(); err != nil {
