@@ -162,7 +162,7 @@ func (m *NvidiaCollector) Init(config json.RawMessage) error {
 		// Add device handle
 		g.device = device
 		g.lastEnergyReading = 0
-		g.lastEnergyTimestamp = time.Now()
+		g.lastEnergyTimestamp = time.Time{}
 
 		// Add tags
 		g.tags = map[string]string{
@@ -460,55 +460,48 @@ func readPowerUsage(device *NvidiaCollectorDevice, output chan lp.CCMessage) err
 	return nil
 }
 
+var nvidiaNow = time.Now
+
 func readEnergyConsumption(device *NvidiaCollectorDevice, output chan lp.CCMessage) error {
-	// Retrieves total energy consumption for this GPU in millijoules (mJ) since the driver was last reloaded
-
-	// For Volta or newer fully supported devices.
-	if (!device.excludeMetrics["nv_energy"]) && (!device.excludeMetrics["nv_energy_abs"]) && (!device.excludeMetrics["nv_average_power"]) {
-		now := time.Now()
-		mode, ret := nvml.DeviceGetPowerManagementMode(device.device)
-		if ret != nvml.SUCCESS {
-			return nil
+	// NVML reports millijoules since the driver was last reloaded.
+	if device.excludeMetrics["nv_energy"] && device.excludeMetrics["nv_energy_abs"] && device.excludeMetrics["nv_average_power"] {
+		return nil
+	}
+	mode, ret := nvml.DeviceGetPowerManagementMode(device.device)
+	if ret != nvml.SUCCESS || mode != nvml.FEATURE_ENABLED {
+		return nil
+	}
+	energy, ret := nvml.DeviceGetTotalEnergyConsumption(device.device)
+	if ret != nvml.SUCCESS {
+		return nil
+	}
+	now := nvidiaNow()
+	// A zero energy reading is a valid baseline. A decreased counter is a
+	// reset, so publish the absolute value and establish a new baseline.
+	if !device.lastEnergyTimestamp.IsZero() && energy >= device.lastEnergyReading {
+		energyDiff := float64(energy-device.lastEnergyReading) / 1000
+		if !device.excludeMetrics["nv_energy"] {
+			if y, err := lp.NewMetric("nv_energy", device.tags, device.meta, energyDiff, now); err == nil {
+				y.AddMeta("unit", "Joules")
+				output <- y
+			}
 		}
-		if mode == nvml.FEATURE_ENABLED {
-			energy, ret := nvml.DeviceGetTotalEnergyConsumption(device.device)
-			if ret == nvml.SUCCESS {
-				if device.lastEnergyReading != 0 {
-					if !device.excludeMetrics["nv_energy"] {
-						y, err := lp.NewMetric(
-							"nv_energy",
-							device.tags,
-							device.meta,
-							(energy-device.lastEnergyReading)/1000,
-							now)
-						if err == nil {
-							y.AddMeta("unit", "Joules")
-							output <- y
-						}
-					}
-					if !device.excludeMetrics["nv_average_power"] {
-
-						energyDiff := float64(energy-device.lastEnergyReading) / 1000.0
-						timeDiff := now.Sub(device.lastEnergyTimestamp)
-						y, err := lp.NewMetric("nv_average_power", device.tags, device.meta, energyDiff/float64(timeDiff.Seconds()), now)
-						if err == nil {
-							y.AddMeta("unit", "watts")
-							output <- y
-						}
-					}
-				}
-				if !device.excludeMetrics["nv_energy_abs"] {
-					y, err := lp.NewMetric("nv_energy_abs", device.tags, device.meta, energy/1000, now)
-					if err == nil {
-						y.AddMeta("unit", "Joules")
-						output <- y
-					}
-				}
-				device.lastEnergyReading = energy
-				device.lastEnergyTimestamp = time.Now()
+		elapsed := now.Sub(device.lastEnergyTimestamp).Seconds()
+		if !device.excludeMetrics["nv_average_power"] && elapsed > 0 {
+			if y, err := lp.NewMetric("nv_average_power", device.tags, device.meta, energyDiff/elapsed, now); err == nil {
+				y.AddMeta("unit", "watts")
+				output <- y
 			}
 		}
 	}
+	if !device.excludeMetrics["nv_energy_abs"] {
+		if y, err := lp.NewMetric("nv_energy_abs", device.tags, device.meta, float64(energy)/1000, now); err == nil {
+			y.AddMeta("unit", "Joules")
+			output <- y
+		}
+	}
+	device.lastEnergyReading = energy
+	device.lastEnergyTimestamp = now
 	return nil
 }
 
@@ -750,7 +743,7 @@ func readRemappedRows(device *NvidiaCollectorDevice, output chan lp.CCMessage) e
 				}
 			}
 			if !device.excludeMetrics["nv_remapped_rows_uncorrected"] {
-				y, err := lp.NewMetric("nv_remapped_rows_corrected", device.tags, device.meta, float64(uncorrected), time.Now())
+				y, err := lp.NewMetric("nv_remapped_rows_uncorrected", device.tags, device.meta, float64(uncorrected), time.Now())
 				if err == nil {
 					output <- y
 				}
