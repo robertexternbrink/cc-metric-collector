@@ -61,6 +61,7 @@ func getStats(filename string) map[string]MemstatStats {
 	file, err := os.Open(filename)
 	if err != nil {
 		cclog.Error(err.Error())
+		return nil
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
@@ -72,25 +73,25 @@ func getStats(filename string) map[string]MemstatStats {
 	for scanner.Scan() {
 		line := scanner.Text()
 		linefields := strings.Fields(line)
-		switch len(linefields) {
-		case 3:
-			v, err := strconv.ParseFloat(linefields[1], 64)
-			if err == nil {
-				stats[strings.Trim(linefields[0], ":")] = MemstatStats{
-					value: v,
-					unit:  linefields[2],
-				}
-			}
-		case 5:
-			v, err := strconv.ParseFloat(linefields[3], 64)
-			if err == nil {
-				cclog.ComponentDebug("getStats", strings.Trim(linefields[2], ":"), v, linefields[4])
-				stats[strings.Trim(linefields[2], ":")] = MemstatStats{
-					value: v,
-					unit:  linefields[4],
-				}
-			}
+		if len(linefields) >= 2 && linefields[0] == "Node" {
+			linefields = linefields[2:]
 		}
+		if len(linefields) != 2 && len(linefields) != 3 {
+			continue
+		}
+		v, err := strconv.ParseFloat(linefields[1], 64)
+		if err != nil {
+			continue
+		}
+		unit := ""
+		if len(linefields) == 3 {
+			unit = linefields[2]
+		}
+		stats[strings.TrimSuffix(linefields[0], ":")] = MemstatStats{value: v, unit: unit}
+	}
+	if err := scanner.Err(); err != nil {
+		cclog.Error(err.Error())
+		return nil
 	}
 	return stats
 }
@@ -208,13 +209,14 @@ func (m *MemstatCollector) Read(interval time.Duration, output chan lp.CCMessage
 
 	sendStats := func(stats map[string]MemstatStats, tags map[string]string) {
 		for match, name := range m.matches {
-			var value float64 = 0
+			v, exists := stats[match]
+			if !exists {
+				continue
+			}
+			value := v.value
 			unit := ""
-			if v, ok := stats[match]; ok {
-				value = v.value
-				if len(v.unit) > 0 {
-					unit = v.unit
-				}
+			if len(v.unit) > 0 {
+				unit = v.unit
 			}
 
 			y, err := lp.NewMetric(name, tags, m.meta, value, time.Now())
@@ -226,6 +228,11 @@ func (m *MemstatCollector) Read(interval time.Duration, output chan lp.CCMessage
 			}
 		}
 		if m.sendMemUsed {
+			_, haveTotal := stats["MemTotal"]
+			_, haveFree := stats["MemFree"]
+			if !haveTotal || !haveFree {
+				return
+			}
 			memUsed := 0.0
 			unit := ""
 			if totalVal, total := stats["MemTotal"]; total {
